@@ -88,7 +88,7 @@ public:
         const float A = W_ * H_;
         k_ = C_ * std::sqrt(A / static_cast<float>(g.vertexCount()));
 
-        std::mt19937 rng{ seed.value_or(std::random_device{}()) };
+        std::mt19937 rng{ static_cast<std::uint32_t>(seed.value_or(std::random_device{}())) };
         std::uniform_real_distribution<float> rx{ 0.0f, W_ };
         std::uniform_real_distribution<float> ry{ 0.0f, H_ };
 
@@ -101,14 +101,11 @@ public:
     // ── Cooling schedule ─────────────────────────────────────
     void setTemperature(float t)   noexcept { T_ = t; }
     void setCoolingRate(float r)   noexcept { coolingRate_ = r; }
-    [[nodiscard]] float temperature() const noexcept { return T_; }
 
-    // ── Metrics ──────────────────────────────────────────────
-    /**
-     * Returns the total system displacement ("kinetic energy") from the
-     * last completed step.  Use this to plot convergence curves.
-     */
-    [[nodiscard]] float kineticEnergy() const noexcept { return lastKineticEnergy_; }
+    // ── Accessors ────────────────────────────────────────────
+    [[nodiscard]] float temperature()     const noexcept { return T_; }
+    [[nodiscard]] float kineticEnergy()   const noexcept { return lastKineticEnergy_; }
+    [[nodiscard]] float optimalDistance() const noexcept { return k_; }
 
     // ── Core step ────────────────────────────────────────────
     /**
@@ -134,7 +131,6 @@ public:
         // f_a(d) = d² / k  →  force vector = (d / k) * delta_unit
         //                                   = delta * (d / k) / d
         //                                   = delta / k
-        // (using unnormalised delta to avoid extra division)
         for (const Edge& e : g.edges()) {
             Node& u = g.nodeById(e.source);
             Node& v = g.nodeById(e.target);
@@ -144,8 +140,8 @@ public:
             if (dist < 1e-4f) continue;
 
             // fa(d) = d²/k  ⟹  magnitude, direction = delta/dist
-            float mag   = (dist * dist) / k_;          // scalar attraction
-            glm::vec2 force = (delta / dist) * mag;    // directed vector
+            float mag        = (dist * dist) / k_;
+            glm::vec2 force  = (delta / dist) * mag;
 
             u.displacement -= force;
             v.displacement += force;
@@ -158,13 +154,12 @@ public:
             float dispLen = glm::length(v.displacement);
 
             if (dispLen > 1e-6f) {
-                // Clamp magnitude to current temperature T_
-                float clamped = std::min(dispLen, T_);
-                v.position   += (v.displacement / dispLen) * clamped;
-                energy       += clamped;                // accumulate kinetic energy
+                float clamped  = std::min(dispLen, T_);
+                v.position    += (v.displacement / dispLen) * clamped;
+                energy        += clamped;
             }
 
-            // Boundary clamping: keep node strictly inside [0,W]×[0,H]
+            // Keep node strictly inside [0,W] × [0,H]
             v.position.x = std::clamp(v.position.x, 0.0f, W_);
             v.position.y = std::clamp(v.position.y, 0.0f, H_);
         }
@@ -180,14 +175,14 @@ private:
     float W_, H_, C_;
 
     // Algorithm state
-    float k_               { 1.0f  };  // optimal distance
-    float T_               { 1.0f  };  // current temperature
-    float T_min_           { 1e-3f };  // minimum temperature
-    float coolingRate_     { 0.95f };  // multiplicative decay per step
+    float k_                { 1.0f  };   // optimal distance
+    float T_                { 1.0f  };   // current temperature
+    float T_min_            { 1e-3f };   // minimum temperature floor
+    float coolingRate_      { 0.95f };   // multiplicative decay α per step
 
     // Metrics
     float lastKineticEnergy_{ 0.0f };
 
-    // Force strategy (swappable)
+    // Force strategy (swappable at runtime)
     std::unique_ptr<IRepulsiveStrategy> repulsiveStrategy_;
 };

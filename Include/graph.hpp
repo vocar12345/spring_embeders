@@ -126,7 +126,7 @@ public:
         for (std::size_t i = 0; i < n; ++i)
             g.addVertex(static_cast<Node::ID>(i));
 
-        std::mt19937_64 rng{ seed.value_or(std::random_device{}()) };
+        std::mt19937_64 rng{ static_cast<std::uint64_t>(seed.value_or(std::random_device{}())) };
         std::bernoulli_distribution coin{ p };
 
         for (std::size_t i = 0; i < n; ++i)
