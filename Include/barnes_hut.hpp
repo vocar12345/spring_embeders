@@ -13,64 +13,64 @@
 // ============================================================
 
 /**
- * Implements IRepulsiveStrategy using the Barnes-Hut multipole
- * acceptance criterion.
+ * Barnes-Hut multipole approximation for repulsive forces.
  *
- * Algorithm per step():
- *   1. Compute a tight BoundingBox around all current node positions.
- *   2. Build a QuadTree by inserting every node — O(|V| log |V|).
- *   3. For each node v, traverse the tree:
- *        - If cell is a leaf containing only v itself  → skip (self-force).
- *        - If s/d < θ (Barnes-Hut criterion)          → treat cell as
- *          a single super-node at its center of mass.
- *        - Otherwise                                   → recurse into children.
- *      Each accepted interaction computes:
- *        F_r = (k² / d²) * δ,    δ = v.pos - cell.CoM
- *      This is the same formula as brute-force; the approximation lies in
- *      replacing many individual nodes with one aggregate node.
+ * Per call to computeRepulsive():
+ *   1. Compute tight BoundingBox around all node positions.
+ *   2. Build a pool-based QuadTree — O(|V| log |V|), zero heap allocs
+ *      after the first call (pool memory is reused via reset()).
+ *   3. For each node v, walk the tree:
+ *        - Leaf containing only v itself  → skip (self-force).
+ *        - s / d < θ                      → accept: treat subtree as
+ *          a single super-node at its centre of mass.
+ *        - Otherwise                      → recurse into children.
+ *      Accepted force:
+ *        F_r = totalMass * k² / d²  * (δ / |δ|)
+ *      where δ = v.pos − cell.CoM.
+ *      The totalMass factor accounts for each constituent node
+ *      contributing an independent repulsion of magnitude k²/d².
  *
  * Complexity:
- *   Tree construction : O(|V| log |V|)
- *   Force computation : O(|V| log |V|)   expected for θ ∈ (0,1)
- *   Total             : O(|V| log |V|)   vs O(|V|²) for BruteForce
+ *   Tree build  : O(|V| log |V|)
+ *   Force query : O(|V| log |V|)  expected for θ ∈ (0,1)
  *
- * Parameter θ (theta):
- *   Controls accuracy vs speed trade-off.
- *   θ = 0.0  →  exact (degenerates to O(|V|²))
- *   θ = 0.5  →  standard choice (good balance for layout)
- *   θ = 1.0  →  very aggressive approximation (faster, less accurate)
+ * θ trade-off:
+ *   θ = 0.0 → exact O(|V|²)   θ = 0.5 → standard   θ = 1.0 → aggressive
  */
 class BarnesHutRepulsion final : public IRepulsiveStrategy {
 public:
     explicit BarnesHutRepulsion(float theta = 0.5f) noexcept
-        : theta_(theta) {}
+        : theta_(theta),
+          tree_(BoundingBox{{ 0,0 }, 1, 1 }, 512)  // placeholder; reset each call
+    {}
 
     void setTheta(float theta) noexcept { theta_ = theta; }
     [[nodiscard]] float theta() const noexcept { return theta_; }
 
-    // ── IRepulsiveStrategy interface ──────────────────────────
+    // ── IRepulsiveStrategy ────────────────────────────────────
 
     void computeRepulsive(std::span<Node> nodes, float k) override {
         if (nodes.empty()) return;
 
-        // ── 1. Build tight bounding box ───────────────────────
+        // ── 1. Tight bounding box ─────────────────────────────
         BoundingBox bounds = computeBounds(nodes);
 
-        // ── 2. Build QuadTree ─────────────────────────────────
-        QuadTree tree{ bounds };
+        // ── 2. Build QuadTree (reuses pool memory) ────────────
+        tree_.reset(bounds);
         for (const Node& v : nodes)
-            tree.insert(v.position, v.id);
+            tree_.insert(v.position, v.id);
 
-        // ── 3. Compute repulsive force for each node ──────────
+        // ── 3. Repulsive force per node ───────────────────────
         const float k2 = k * k;
         for (Node& v : nodes)
-            v.displacement += forceFromTree(tree, v.position, v.id, k2);
+            v.displacement += queryNode(0, v.position, v.id, k2);
     }
 
 private:
-    float theta_;
+    float     theta_;
+    QuadTree  tree_;   // persists across calls — pool reused each iteration
 
-    // ── Bounds helper ─────────────────────────────────────────
+    // ── Bounds ────────────────────────────────────────────────
 
     static BoundingBox computeBounds(std::span<const Node> nodes) noexcept {
         float minX =  std::numeric_limits<float>::max();
@@ -85,76 +85,52 @@ private:
             maxY = std::max(maxY, v.position.y);
         }
 
-        // Add a small margin to avoid boundary precision issues
         const float margin = 1.0f;
-        const glm::vec2 center{ (minX + maxX) * 0.5f,
-                                (minY + maxY) * 0.5f };
-        const float halfW = (maxX - minX) * 0.5f + margin;
-        const float halfH = (maxY - minY) * 0.5f + margin;
-
-        return BoundingBox{ center, halfW, halfH };
+        return BoundingBox{
+            { (minX + maxX) * 0.5f, (minY + maxY) * 0.5f },
+            (maxX - minX) * 0.5f + margin,
+            (maxY - minY) * 0.5f + margin
+        };
     }
 
-    // ── Recursive tree traversal ──────────────────────────────
+    // ── Recursive tree walk ───────────────────────────────────
 
-    /**
-     * Computes the net repulsive force on a node at position `pos`
-     * (with id `selfId`) by walking the QuadTree.
-     *
-     * Barnes-Hut criterion:  s / d < θ
-     *   s = cell size  (longest side of the bounding box)
-     *   d = distance from pos to cell center of mass
-     *
-     * When the criterion is met the entire subtree contributes a
-     * single force proportional to its total mass (number of nodes):
-     *
-     *   F_r = totalMass * k² / d²  * δ_unit
-     *
-     * The factor `totalMass` arises because each node contributes
-     * an independent repulsive force of magnitude k²/d², and within
-     * the accepted cell all nodes are approximated as co-located at
-     * the center of mass.
-     */
-    [[nodiscard]] glm::vec2 forceFromTree(const QuadTree& node,
-                                          glm::vec2        pos,
-                                          std::uint32_t    selfId,
-                                          float            k2) const
+    [[nodiscard]] glm::vec2 queryNode(int          nodeIdx,
+                                      glm::vec2    pos,
+                                      std::uint32_t selfId,
+                                      float         k2) const
     {
-        if (node.totalMass() == 0) return { 0.0f, 0.0f };
+        const QuadTree::Node& n = tree_.at(nodeIdx);
+        if (n.totalMass < 0.5f) return { 0.0f, 0.0f };
 
-        glm::vec2 delta = pos - node.centerOfMass();
+        glm::vec2 delta = pos - n.centerOfMass;
         float dist      = glm::length(delta);
 
-        // ── Self-exclusion for exact leaf ─────────────────────
-        if (node.isLeaf()) {
-            if (node.totalMass() == 1 && node.leafId() == selfId)
-                return { 0.0f, 0.0f };                // skip self
+        // Self-exclusion at exact leaf
+        if (n.isLeaf()) {
+            if (n.hasPoint && n.pointId == selfId)
+                return { 0.0f, 0.0f };
         }
 
-        // ── Guard against coincident positions ────────────────
         if (dist < 1e-4f) {
             dist  = 1e-4f;
             delta = glm::vec2{ 1e-4f, 0.0f };
         }
 
-        // ── Barnes-Hut acceptance criterion: s/d < θ ─────────
-        // s = node.bounds().size()  (longest side of cell)
-        // d = dist                  (distance to center of mass)
-        //
-        // When accepted, the force is scaled by totalMass because
-        // each constituent graph node contributes k²/d² independently.
-        const float s = node.bounds().size();
-        if (node.isLeaf() || (s / dist) < theta_) {
-            // Treat entire subtree as one super-node at CoM
-            const float mass    = static_cast<float>(node.totalMass());
-            const float forceMag = mass * k2 / (dist * dist);
+        // Barnes-Hut criterion: s / d < θ
+        const float s = n.bounds.size();
+        if (n.isLeaf() || (s / dist) < theta_) {
+            const float forceMag = n.totalMass * k2 / (dist * dist);
             return (delta / dist) * forceMag;
         }
 
-        // ── Recurse into children ─────────────────────────────
+        // Recurse into children
         glm::vec2 total{ 0.0f, 0.0f };
-        for (const auto& child : node.children())
-            if (child) total += forceFromTree(*child, pos, selfId, k2);
+        for (int q = 0; q < 4; ++q) {
+            int ci = n.children[q];
+            if (ci != QuadTree::NULL_NODE)
+                total += queryNode(ci, pos, selfId, k2);
+        }
         return total;
     }
 };

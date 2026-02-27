@@ -17,19 +17,24 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(glm)
 
-# ── Executable ───────────────────────────────────────────────────────────────
-add_executable(fr_layout
-    src/main.cpp
-)
-
-target_include_directories(fr_layout PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_link_libraries(fr_layout PRIVATE glm::glm)
-
-# ── Compiler warnings ────────────────────────────────────────────────────────
-target_compile_options(fr_layout PRIVATE
+# ── Shared compiler options (applied to all targets) ─────────────────────────
+set(FR_COMPILE_OPTIONS
     $<$<CXX_COMPILER_ID:GNU,Clang>: -Wall -Wextra -Wpedantic -O2>
     $<$<CXX_COMPILER_ID:MSVC>:      /W4 /O2>
 )
+
+set(FR_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/include)
+
+# ── Executable 1: fr_layout ──────────────────────────────────────────────────
+add_executable(fr_layout src/main.cpp)
+
+target_include_directories(fr_layout PRIVATE ${FR_INCLUDE_DIR})
+target_link_libraries(fr_layout PRIVATE glm::glm)
+target_compile_options(fr_layout PRIVATE ${FR_COMPILE_OPTIONS})
+
+# ── Executable 2: fr_benchmark ───────────────────────────────────────────────
+add_executable(fr_benchmark src/benchmark.cpp)
+
+target_include_directories(fr_benchmark PRIVATE ${FR_INCLUDE_DIR})
+target_link_libraries(fr_benchmark PRIVATE glm::glm)
+target_compile_options(fr_benchmark PRIVATE ${FR_COMPILE_OPTIONS})

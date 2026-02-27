@@ -1,157 +1,159 @@
 #pragma once
 
 #include <glm/glm.hpp>
-#include <array>
-#include <memory>
 #include <vector>
-#include <cassert>
+#include <cstdint>
+#include <algorithm>
+#include <cmath>
 
 // ============================================================
-//  BoundingBox  –  axis-aligned 2D rectangle
+//  BoundingBox
 // ============================================================
 
 struct BoundingBox {
-    glm::vec2 center;   // geometric centre of this cell
-    float     halfW;    // half-width  (x extent)
-    float     halfH;    // half-height (y extent)
+    glm::vec2 center;
+    float     halfW;
+    float     halfH;
 
     [[nodiscard]] bool contains(glm::vec2 p) const noexcept {
         return p.x >= center.x - halfW && p.x <= center.x + halfW
             && p.y >= center.y - halfH && p.y <= center.y + halfH;
     }
 
-    /// Returns one of four sub-quadrants (0=NE,1=NW,2=SW,3=SE).
-    [[nodiscard]] std::array<BoundingBox, 4> subdivide() const noexcept {
-        const float qW = halfW * 0.5f;
-        const float qH = halfH * 0.5f;
-        return {{
-            { { center.x + qW, center.y + qH }, qW, qH },  // NE
-            { { center.x - qW, center.y + qH }, qW, qH },  // NW
-            { { center.x - qW, center.y - qH }, qW, qH },  // SW
-            { { center.x + qW, center.y - qH }, qW, qH },  // SE
-        }};
-    }
-
-    /// Longest side length — used for the Barnes-Hut s/d criterion.
     [[nodiscard]] float size() const noexcept {
         return 2.0f * std::max(halfW, halfH);
+    }
+
+    [[nodiscard]] BoundingBox child(int q) const noexcept {
+        const float qW = halfW * 0.5f;
+        const float qH = halfH * 0.5f;
+        switch (q) {
+            case 0: return {{ center.x + qW, center.y + qH }, qW, qH }; // NE
+            case 1: return {{ center.x - qW, center.y + qH }, qW, qH }; // NW
+            case 2: return {{ center.x - qW, center.y - qH }, qW, qH }; // SW
+            default:return {{ center.x + qW, center.y - qH }, qW, qH }; // SE
+        }
+    }
+
+    [[nodiscard]] int quadrant(glm::vec2 p) const noexcept {
+        const bool right = p.x >= center.x;
+        const bool up    = p.y >= center.y;
+        if  (right  &&  up) return 0; // NE
+        if  (!right &&  up) return 1; // NW
+        if  (!right && !up) return 2; // SW
+        return 3;                     // SE
     }
 };
 
 // ============================================================
-//  QuadTree
+//  QuadTree  –  flat pool allocator, zero per-iteration heap
 // ============================================================
 
 /**
- * A point-region QuadTree storing one graph node per leaf.
+ * Pool-based QuadTree: all nodes live in a pre-allocated std::vector.
+ * No dynamic allocation per insert — avoids the cache-miss penalty of
+ * unique_ptr chains that makes pointer-based trees slower than brute
+ * force at small-to-medium N.
  *
- * Aggregated quantities per internal node:
- *   centerOfMass  – mass-weighted average position of all contained nodes
- *   totalMass     – number of graph nodes in this subtree (all nodes have
- *                   equal "mass" = 1 in the layout context)
+ * Pool index NULL_NODE (-1) means "no child".
  *
  * Relation to optimal distance k:
- *   The Barnes-Hut criterion compares s/d against θ, where:
- *     s = cell.size()   (spatial width of this QuadTree cell)
- *     d = ||v - centerOfMass||  (distance from query node to cell CoM)
- *   When s/d < θ, the entire subtree is treated as a single super-node
- *   located at centerOfMass.  The repulsive force is then:
- *     F_r = k² / d²  * δ   (same formula as brute-force, but against CoM)
- *   This approximation is valid because nodes far from the cell contribute
- *   nearly-identical force directions, and k sets the length scale at which
- *   repulsion becomes negligible — so cells where s << d can be collapsed
- *   without introducing significant error into the layout.
+ *   The acceptance criterion s/d < θ compares the cell's spatial size s
+ *   to the distance d from query node to cell centre of mass.
+ *   k sets the repulsion length scale; s and d share the same spatial
+ *   units so the criterion is scale-invariant and independent of k.
  */
 class QuadTree {
 public:
-    // Maximum graph nodes in a leaf before it splits.
-    static constexpr int CAPACITY = 1;
+    static constexpr int NULL_NODE = -1;
+
+    struct Node {
+        BoundingBox   bounds;
+        glm::vec2     centerOfMass{ 0.0f, 0.0f };
+        float         totalMass   { 0.0f };
+        glm::vec2     point       { 0.0f, 0.0f }; // leaf payload
+        std::uint32_t pointId     { 0           };
+        bool          hasPoint    { false        };
+        int           children[4] { NULL_NODE, NULL_NODE, NULL_NODE, NULL_NODE };
+
+        [[nodiscard]] bool isLeaf() const noexcept {
+            return children[0] == NULL_NODE;
+        }
+    };
 
     // ── Construction ─────────────────────────────────────────
-    explicit QuadTree(BoundingBox bounds) noexcept
-        : bounds_(bounds) {}
 
-    // Non-copyable; move is fine.
-    QuadTree(const QuadTree&)            = delete;
-    QuadTree& operator=(const QuadTree&) = delete;
-    QuadTree(QuadTree&&)                 = default;
-    QuadTree& operator=(QuadTree&&)      = default;
+    explicit QuadTree(BoundingBox bounds, std::size_t expectedNodes = 512) {
+        pool_.reserve(expectedNodes * 4);
+        pool_.push_back(Node{ bounds });  // index 0 = root
+    }
 
-    // ── Insertion ────────────────────────────────────────────
+    /// Clears the tree and resets with a new bounding box.
+    /// Reuses already-allocated pool memory — no heap activity.
+    void reset(BoundingBox bounds) {
+        pool_.clear();
+        pool_.push_back(Node{ bounds });
+    }
 
-    /**
-     * Inserts a point (graph node position) with given index.
-     * Updates centerOfMass and totalMass on the path to the leaf.
-     *
-     * @param pos    Position of the graph node.
-     * @param nodeId Identifier stored at the leaf (for self-exclusion).
-     * @return       false if pos lies outside this cell's bounds.
-     */
-    bool insert(glm::vec2 pos, std::uint32_t nodeId) {
-        if (!bounds_.contains(pos)) return false;
-
-        // ── Update aggregate (online mean formula) ────────────
-        centerOfMass_ = (centerOfMass_ * static_cast<float>(totalMass_) + pos)
-                        / static_cast<float>(totalMass_ + 1);
-        ++totalMass_;
-
-        // ── Leaf with room ────────────────────────────────────
-        if (!isSubdivided_ && totalMass_ <= CAPACITY) {
-            point_   = pos;
-            pointId_ = nodeId;
-            return true;
-        }
-
-        // ── First overflow: subdivide and re-insert old point ─
-        if (!isSubdivided_) {
-            subdivide();
-            // Re-insert the point that was already here
-            insertIntoChildren(point_, pointId_);
-        }
-
-        insertIntoChildren(pos, nodeId);
-        return true;
+    // ── Insertion ─────────────────────────────────────────────
+    void insert(glm::vec2 pos, std::uint32_t id) {
+        insertAt(0, pos, id);
     }
 
     // ── Accessors ────────────────────────────────────────────
-    [[nodiscard]] glm::vec2    centerOfMass() const noexcept { return centerOfMass_; }
-    [[nodiscard]] int          totalMass()    const noexcept { return totalMass_;    }
-    [[nodiscard]] bool         isLeaf()       const noexcept { return !isSubdivided_; }
-    [[nodiscard]] const BoundingBox& bounds() const noexcept { return bounds_;       }
-
-    [[nodiscard]] const std::array<std::unique_ptr<QuadTree>, 4>&
-    children() const noexcept { return children_; }
-
-    /// The single point stored in a leaf node.
-    [[nodiscard]] glm::vec2    leafPoint()  const noexcept { return point_;   }
-    [[nodiscard]] std::uint32_t leafId()    const noexcept { return pointId_; }
+    [[nodiscard]] const Node& root()        const noexcept { return pool_[0];   }
+    [[nodiscard]] const Node& at(int i)     const noexcept { return pool_[i];   }
 
 private:
-    // ── Helpers ───────────────────────────────────────────────
+    std::vector<Node> pool_;
 
-    void subdivide() {
-        auto quads = bounds_.subdivide();
-        for (int i = 0; i < 4; ++i)
-            children_[i] = std::make_unique<QuadTree>(quads[i]);
-        isSubdivided_ = true;
+    void insertAt(int idx, glm::vec2 pos, std::uint32_t id) {
+        // Update centre of mass via online weighted mean
+        Node& n       = pool_[idx];
+        n.centerOfMass = (n.centerOfMass * n.totalMass + pos)
+                         / (n.totalMass + 1.0f);
+        n.totalMass   += 1.0f;
+
+        if (n.isLeaf()) {
+            if (!n.hasPoint) {
+                n.point    = pos;
+                n.pointId  = id;
+                n.hasPoint = true;
+                return;
+            }
+            // Occupied leaf: subdivide then push existing point down
+            subdivide(idx);
+            glm::vec2    oldPt  = pool_[idx].point;
+            std::uint32_t oldId = pool_[idx].pointId;
+            pool_[idx].hasPoint = false;
+            routeToChild(idx, oldPt, oldId);
+        }
+        routeToChild(idx, pos, id);
     }
 
-    void insertIntoChildren(glm::vec2 pos, std::uint32_t id) {
-        for (auto& child : children_)
-            if (child && child->insert(pos, id)) return;
+    void subdivide(int idx) {
+        for (int q = 0; q < 4; ++q) {
+            pool_[idx].children[q] = static_cast<int>(pool_.size());
+            pool_.emplace_back(Node{ pool_[idx].bounds.child(q) });
+            // NOTE: emplace_back may reallocate pool_, so we re-read
+            // pool_[idx] implicitly through pool_ on next iteration.
+        }
     }
 
-    // ── Data ──────────────────────────────────────────────────
-    BoundingBox bounds_;
-
-    // Aggregated quantities (valid for both internal and leaf nodes)
-    glm::vec2    centerOfMass_{ 0.0f, 0.0f };
-    int          totalMass_   { 0           };
-
-    // Leaf storage (only meaningful when isLeaf() == true)
-    glm::vec2    point_   { 0.0f, 0.0f };
-    std::uint32_t pointId_{ 0           };
-
-    bool isSubdivided_{ false };
-    std::array<std::unique_ptr<QuadTree>, 4> children_;
+    void routeToChild(int parentIdx, glm::vec2 pos, std::uint32_t id) {
+        int q = pool_[parentIdx].bounds.quadrant(pos);
+        // Boundary guard: if float rounding puts pos in the wrong child,
+        // scan all four children for the one that actually contains it.
+        int ci = pool_[parentIdx].children[q];
+        if (!pool_[ci].bounds.contains(pos)) {
+            for (int qq = 0; qq < 4; ++qq) {
+                int alt = pool_[parentIdx].children[qq];
+                if (alt != NULL_NODE && pool_[alt].bounds.contains(pos)) {
+                    ci = alt;
+                    break;
+                }
+            }
+        }
+        insertAt(ci, pos, id);
+    }
 };
