@@ -6,109 +6,128 @@
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
-#include <vector>
+#include <string>
+#include <string_view>
 #include <chrono>
 
 namespace fs  = std::filesystem;
 namespace chr = std::chrono;
 
+// ── Configuration ─────────────────────────────────────────────────────────────
+
 struct Config {
-    // Graph — V=250 keeps animation visually clean
-    std::size_t   numVertices   = 250;
-    double        edgeProb      = 0.04;   // avg degree ~10
+    // Layout engine
+    float frameW      = 1920.0f;
+    float frameH      = 1080.0f;
+    float C           = 1.0f;
+    float initTemp    = 200.0f;
+    float coolingRate = 0.95f;
+    float theta       = 0.8f;
 
-    // Frame
-    float         frameW        = 1920.0f;
-    float         frameH        = 1080.0f;
-    float         C             = 1.0f;
-
-    // Layout
-    float         initTemp      = 200.0f;
-    float         coolingRate   = 0.95f;
-
-    // Barnes-Hut: theta=0.8 gives better spread across the frame
-    // (higher theta = more aggressive long-range repulsion approximation
-    // = nodes pushed further apart, visually closer to brute force result)
-    float         theta         = 0.8f;
-
-    // Simulation
-    int           maxIter       = 300;
-    int           frameInterval = 5;      // capture every Nth iteration
+    // Animation capture
+    int   maxIter       = 300;
+    int   frameInterval = 5;
 
     // I/O
-    fs::path      outputDir     = "output";
-
-    // Same seeds guarantee identical initial positions for both methods
-    std::uint64_t graphSeed     = 42;
-    std::uint64_t layoutSeed    = 7;
+    fs::path      outputDir  = "output";
+    std::uint64_t graphSeed  = 42;
+    std::uint64_t layoutSeed = 7;
 };
+
+// ── Topology factory ──────────────────────────────────────────────────────────
+
+/**
+ * Builds a Graph based on the topology name from argv[1].
+ *
+ * Supported topologies:
+ *   random     – Erdos-Renyi G(250, 0.04)
+ *   grid       – 16x16 lattice grid (256 nodes)
+ *   tree       – Balanced binary tree depth=7 (255 nodes)
+ *   scale-free – Barabasi-Albert n=250, m0=5, m=3
+ *
+ * Default (no argument): scale-free
+ */
+static std::pair<Graph, std::string>
+buildGraph(std::string_view topology, std::uint64_t seed)
+{
+    if (topology == "random") {
+        auto g = Graph::erdosRenyi(250, 0.04, seed);
+        return { std::move(g), "Erdos-Renyi G(250, 0.04)" };
+    }
+    if (topology == "grid") {
+        auto g = Graph::grid(16, 16);
+        return { std::move(g), "Grid 16x16" };
+    }
+    if (topology == "tree") {
+        auto g = Graph::binaryTree(7);   // 2^8 - 1 = 255 nodes
+        return { std::move(g), "Binary Tree depth=7" };
+    }
+    // Default: scale-free
+    auto g = Graph::barabasiAlbert(250, 5, 3, seed);
+    return { std::move(g), "Barabasi-Albert n=250 m0=5 m=3" };
+}
 
 template<typename Duration>
 std::string formatMs(Duration d) {
-    auto ms = chr::duration_cast<chr::milliseconds>(d).count();
-    return std::to_string(ms) + " ms";
+    return std::to_string(
+        chr::duration_cast<chr::milliseconds>(d).count()) + " ms";
 }
 
-int main() {
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+int main(int argc, char* argv[]) {
     const Config cfg;
 
+    // Parse topology from command-line argument
+    std::string_view topology = (argc > 1) ? argv[1] : "scale-free";
+
+    std::cout << "Topology: " << topology << "\n\n";
+
     // ── 1. Build graph ────────────────────────────────────────
-    std::cout << "[1/5] Generating Erdos-Renyi G("
-              << cfg.numVertices << ", " << cfg.edgeProb << ") ... ";
+    std::cout << "[1/6] Building graph ... ";
     std::cout.flush();
 
-    Graph gBF = Graph::erdosRenyi(cfg.numVertices, cfg.edgeProb, cfg.graphSeed);
+    auto [gBF, description] = buildGraph(topology, cfg.graphSeed);
 
-    std::cout << "done.  |V| = " << gBF.vertexCount()
-              << "  |E| = "      << gBF.edgeCount() << '\n';
+    std::cout << "done.\n"
+              << "       " << description << "\n"
+              << "       |V| = " << gBF.vertexCount()
+              << "   |E| = "     << gBF.edgeCount() << '\n';
 
-    // ── 2. Deep-copy graph ────────────────────────────────────
-    // Graph uses STL containers so assignment is a full deep copy.
-    // Both engines use the same layoutSeed so initial positions are
-    // identical — making the side-by-side comparison scientifically fair.
-    std::cout << "[2/5] Deep-copying graph for Barnes-Hut run ... ";
+    // ── 2. Deep-copy for Barnes-Hut run ───────────────────────
+    std::cout << "[2/6] Deep-copying graph ... ";
     Graph gBH = gBF;
     std::cout << "done.\n";
 
-    // ── 3. Export shared edge list ────────────────────────────
-    std::cout << "[3/5] Exporting edges ... ";
+    // ── 3. Export edge list ───────────────────────────────────
+    std::cout << "[3/6] Exporting edges ... ";
     DataExporter::exportEdges(gBF, cfg.outputDir);
     std::cout << "done.\n";
 
-    // Open animation CSV — writes header, truncates any existing file
-    DataExporter::AnimationWriter animWriter{ cfg.outputDir, /*overwrite=*/true };
+    DataExporter::AnimationWriter animWriter{ cfg.outputDir, true };
 
     // ── 4. Brute-Force run ────────────────────────────────────
-    std::cout << "[4/5] BruteForce run (" << cfg.maxIter << " iters) ...\n";
+    std::cout << "[4/6] BruteForce run (" << cfg.maxIter << " iters) ...\n";
     {
         LayoutEngine engine{ cfg.frameW, cfg.frameH, cfg.C };
         engine.setTemperature(cfg.initTemp);
         engine.setCoolingRate(cfg.coolingRate);
-        // Default strategy is BruteForceRepulsion — no swap needed
         engine.initialize(gBF, cfg.layoutSeed);
 
-        // Capture iteration 0 (initial random scatter)
         animWriter.appendFrame(gBF, "BruteForce", 0);
 
         const auto t0 = chr::high_resolution_clock::now();
-
         for (int i = 1; i <= cfg.maxIter; ++i) {
             engine.step(gBF);
             if (i % cfg.frameInterval == 0)
                 animWriter.appendFrame(gBF, "BruteForce", i);
-            if (i % 100 == 0)
-                std::cout << "  iter " << std::setw(4) << i
-                          << "  T="  << std::fixed << std::setprecision(3)
-                          << engine.temperature()
-                          << "  E_k=" << engine.kineticEnergy() << '\n';
         }
-
         std::cout << "  Done in "
                   << formatMs(chr::high_resolution_clock::now() - t0) << '\n';
     }
 
     // ── 5. Barnes-Hut run ─────────────────────────────────────
-    std::cout << "[5/5] BarnesHut run (theta=" << cfg.theta
+    std::cout << "[5/6] BarnesHut run (theta=" << cfg.theta
               << ", " << cfg.maxIter << " iters) ...\n";
     {
         LayoutEngine engine{ cfg.frameW, cfg.frameH, cfg.C };
@@ -118,35 +137,59 @@ int main() {
             std::make_unique<BarnesHutRepulsion>(cfg.theta));
         engine.initialize(gBH, cfg.layoutSeed);
 
-        // Capture iteration 0
         animWriter.appendFrame(gBH, "BarnesHut", 0);
 
         const auto t0 = chr::high_resolution_clock::now();
-
         for (int i = 1; i <= cfg.maxIter; ++i) {
             engine.step(gBH);
             if (i % cfg.frameInterval == 0)
                 animWriter.appendFrame(gBH, "BarnesHut", i);
-            if (i % 100 == 0)
-                std::cout << "  iter " << std::setw(4) << i
-                          << "  T="  << std::fixed << std::setprecision(3)
-                          << engine.temperature()
-                          << "  E_k=" << engine.kineticEnergy() << '\n';
         }
-
-        std::cout << "  Done in  "
+        std::cout << "  Done in "
                   << formatMs(chr::high_resolution_clock::now() - t0) << '\n';
     }
 
     animWriter.flush();
 
-    const int totalFrames = cfg.maxIter / cfg.frameInterval + 1;
-    std::cout << "\nOutput:\n"
-              << "  -> " << (cfg.outputDir / "edges.csv") << '\n'
-              << "  -> " << (cfg.outputDir / "animation_frames.csv")
-              << "  (" << totalFrames * 2 << " total frames, "
-              << cfg.numVertices << " nodes each)\n\n"
-              << "Next:  python animate.py\n";
+    // ── 6. Build final QuadTree on converged BF positions ─────
+    // We use BruteForce final positions as the "ground truth" layout
+    // since it is exact. The QuadTree export visualises how Barnes-Hut
+    // would subdivide this converged configuration.
+    std::cout << "[6/6] Building final QuadTree and exporting ...\n";
+    {
+        // Compute tight bounding box around converged positions
+        float minX =  std::numeric_limits<float>::max();
+        float minY =  std::numeric_limits<float>::max();
+        float maxX = -std::numeric_limits<float>::max();
+        float maxY = -std::numeric_limits<float>::max();
+        for (const Node& v : gBF.nodes()) {
+            minX = std::min(minX, v.position.x);
+            minY = std::min(minY, v.position.y);
+            maxX = std::max(maxX, v.position.x);
+            maxY = std::max(maxY, v.position.y);
+        }
+        const float margin = 10.0f;
+        BoundingBox rootBox{
+            { (minX + maxX) * 0.5f, (minY + maxY) * 0.5f },
+            (maxX - minX) * 0.5f + margin,
+            (maxY - minY) * 0.5f + margin
+        };
+
+        QuadTree finalTree{ rootBox, gBF.vertexCount() };
+        for (const Node& v : gBF.nodes())
+            finalTree.insert(v.position, v.id);
+
+        // Export node positions and QuadTree cells
+        DataExporter::exportNodes(gBF, cfg.outputDir);
+        DataExporter::exportQuadTree(finalTree, cfg.outputDir);
+    }
+
+    std::cout << "\nAll outputs in '" << cfg.outputDir << "/':\n"
+              << "  edges.csv  nodes.csv  animation_frames.csv\n"
+              << "  quadtree.csv  metrics not exported in animation mode\n\n"
+              << "Next steps:\n"
+              << "  python animate.py\n"
+              << "  python plot_quadtree.py\n";
 
     return EXIT_SUCCESS;
 }

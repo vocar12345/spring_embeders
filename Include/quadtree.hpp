@@ -38,10 +38,10 @@ struct BoundingBox {
     [[nodiscard]] int quadrant(glm::vec2 p) const noexcept {
         const bool right = p.x >= center.x;
         const bool up    = p.y >= center.y;
-        if  (right  &&  up) return 0; // NE
-        if  (!right &&  up) return 1; // NW
-        if  (!right && !up) return 2; // SW
-        return 3;                     // SE
+        if  (right  &&  up) return 0;
+        if  (!right &&  up) return 1;
+        if  (!right && !up) return 2;
+        return 3;
     }
 };
 
@@ -50,18 +50,16 @@ struct BoundingBox {
 // ============================================================
 
 /**
- * Pool-based QuadTree: all nodes live in a pre-allocated std::vector.
- * No dynamic allocation per insert — avoids the cache-miss penalty of
- * unique_ptr chains that makes pointer-based trees slower than brute
- * force at small-to-medium N.
+ * Pool-based QuadTree with bounding box export support.
  *
- * Pool index NULL_NODE (-1) means "no child".
+ * The collectBoxes() method recursively walks the tree and collects
+ * bounding boxes of all internal cells — used to visualise the spatial
+ * subdivision structure overlaid on the final graph layout.
  *
  * Relation to optimal distance k:
- *   The acceptance criterion s/d < θ compares the cell's spatial size s
- *   to the distance d from query node to cell centre of mass.
- *   k sets the repulsion length scale; s and d share the same spatial
- *   units so the criterion is scale-invariant and independent of k.
+ *   The acceptance criterion s/d < θ compares cell size s to the
+ *   distance d from query node to cell CoM. Both are in the same
+ *   spatial units as k, so the criterion is scale-invariant.
  */
 class QuadTree {
 public:
@@ -71,7 +69,7 @@ public:
         BoundingBox   bounds;
         glm::vec2     centerOfMass{ 0.0f, 0.0f };
         float         totalMass   { 0.0f };
-        glm::vec2     point       { 0.0f, 0.0f }; // leaf payload
+        glm::vec2     point       { 0.0f, 0.0f };
         std::uint32_t pointId     { 0           };
         bool          hasPoint    { false        };
         int           children[4] { NULL_NODE, NULL_NODE, NULL_NODE, NULL_NODE };
@@ -85,31 +83,56 @@ public:
 
     explicit QuadTree(BoundingBox bounds, std::size_t expectedNodes = 512) {
         pool_.reserve(expectedNodes * 4);
-        pool_.push_back(Node{ bounds });  // index 0 = root
+        pool_.push_back(Node{ bounds });
     }
 
-    /// Clears the tree and resets with a new bounding box.
-    /// Reuses already-allocated pool memory — no heap activity.
     void reset(BoundingBox bounds) {
         pool_.clear();
         pool_.push_back(Node{ bounds });
     }
 
     // ── Insertion ─────────────────────────────────────────────
+
     void insert(glm::vec2 pos, std::uint32_t id) {
         insertAt(0, pos, id);
     }
 
-    // ── Accessors ────────────────────────────────────────────
-    [[nodiscard]] const Node& root()        const noexcept { return pool_[0];   }
-    [[nodiscard]] const Node& at(int i)     const noexcept { return pool_[i];   }
+    // ── Accessors ─────────────────────────────────────────────
+
+    [[nodiscard]] const Node& root()     const noexcept { return pool_[0]; }
+    [[nodiscard]] const Node& at(int i)  const noexcept { return pool_[i]; }
+    [[nodiscard]] std::size_t poolSize() const noexcept { return pool_.size(); }
+
+    // ── Bounding box collection for visualisation ─────────────
+
+    /**
+     * Recursively collects bounding boxes of all internal QuadTree cells.
+     *
+     * Internal cells (non-leaves) represent spatial regions where the
+     * Barnes-Hut algorithm aggregated multiple nodes into a super-node.
+     * Visualising these boxes reveals the adaptive refinement structure:
+     * densely populated areas produce many small cells while sparse
+     * regions produce large cells.
+     *
+     * @param minMass  Minimum node count for a cell to be included.
+     *                 Default = 2 suppresses single-node leaf boxes,
+     *                 which would clutter the visualisation.
+     * @return         Vector of BoundingBox structs, unordered.
+     */
+    [[nodiscard]] std::vector<BoundingBox>
+    collectBoxes(float minMass = 2.0f) const
+    {
+        std::vector<BoundingBox> result;
+        result.reserve(pool_.size() / 2);
+        collectRecursive(0, minMass, result);
+        return result;
+    }
 
 private:
     std::vector<Node> pool_;
 
     void insertAt(int idx, glm::vec2 pos, std::uint32_t id) {
-        // Update centre of mass via online weighted mean
-        Node& n       = pool_[idx];
+        Node& n        = pool_[idx];
         n.centerOfMass = (n.centerOfMass * n.totalMass + pos)
                          / (n.totalMass + 1.0f);
         n.totalMass   += 1.0f;
@@ -121,9 +144,8 @@ private:
                 n.hasPoint = true;
                 return;
             }
-            // Occupied leaf: subdivide then push existing point down
             subdivide(idx);
-            glm::vec2    oldPt  = pool_[idx].point;
+            glm::vec2     oldPt = pool_[idx].point;
             std::uint32_t oldId = pool_[idx].pointId;
             pool_[idx].hasPoint = false;
             routeToChild(idx, oldPt, oldId);
@@ -135,15 +157,11 @@ private:
         for (int q = 0; q < 4; ++q) {
             pool_[idx].children[q] = static_cast<int>(pool_.size());
             pool_.emplace_back(Node{ pool_[idx].bounds.child(q) });
-            // NOTE: emplace_back may reallocate pool_, so we re-read
-            // pool_[idx] implicitly through pool_ on next iteration.
         }
     }
 
     void routeToChild(int parentIdx, glm::vec2 pos, std::uint32_t id) {
-        int q = pool_[parentIdx].bounds.quadrant(pos);
-        // Boundary guard: if float rounding puts pos in the wrong child,
-        // scan all four children for the one that actually contains it.
+        int q  = pool_[parentIdx].bounds.quadrant(pos);
         int ci = pool_[parentIdx].children[q];
         if (!pool_[ci].bounds.contains(pos)) {
             for (int qq = 0; qq < 4; ++qq) {
@@ -155,5 +173,20 @@ private:
             }
         }
         insertAt(ci, pos, id);
+    }
+
+    void collectRecursive(int idx, float minMass,
+                          std::vector<BoundingBox>& out) const
+    {
+        if (idx == NULL_NODE) return;
+        const Node& n = pool_[idx];
+        if (n.totalMass < minMass) return;
+
+        // Only collect internal nodes — leaf boxes clutter the plot
+        if (!n.isLeaf())
+            out.push_back(n.bounds);
+
+        for (int q = 0; q < 4; ++q)
+            collectRecursive(n.children[q], minMass, out);
     }
 };
