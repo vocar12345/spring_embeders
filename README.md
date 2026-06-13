@@ -202,3 +202,53 @@ the entire cell is treated as a single super-node at its centre of mass. This re
 | `figures/06_complexity_loglog.pdf` | Runtime vs N (log-log + fitted curves) |
 | `figures/07_quadtree_overlay.pdf` | QuadTree cell overlay on final layout |
 | `animation.mp4` | Side-by-side convergence animation |
+
+
+### Batch Adjacency-List Processing
+
+Place any number of adjacency-list `.txt` files in the `Input/` folder,
+then run the batch processor to layout all of them automatically.
+
+**Input format** (`Input/mygraph.txt`):
+```
+# Lines starting with # are comments
+1: 2 3 4
+2: 1 19 20
+3: 1 15 17
+...
+```
+Each line: `<node_id>: <neighbor_id> <neighbor_id> ...`
+Node IDs can be any integers (not necessarily 0-based).
+Duplicate edges and self-loops are silently ignored.
+
+**Run:**
+```bash
+mkdir Input
+cp mygraph.txt Input/
+./build/fr_batch              # Input/ and Output/ by default
+./build/fr_batch MyIn MyOut   # custom directories
+
+python batch_visualise.py     # renders Output//layout.pdf
+```
+
+**Output structure:**
+```
+Output/
+└── mygraph/
+    ├── nodes.csv      (node_id, x, y)
+    ├── edges.csv      (source, target)
+    └── layout.pdf     (publication-ready figure)
+```
+
+**Layout quality parameters** (edit `src/batch.cpp` `LayoutConfig`):
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `C` | `3.0` | Multiplier on optimal inter-node distance. Increase to spread nodes further apart. |
+| `iterations` | `2000` | More iterations = better convergence, especially for symmetric graphs. |
+| `coolingRate` | `0.99` | Closer to 1.0 = slower cooling = better chance of finding symmetric layout. |
+| `initTemp` | `500` | Higher = wider initial exploration, helps escape bad starting positions. |
+| `theta` | `0.5` | Barnes-Hut accuracy. Lower = more accurate, slower. Only used when \|V\| > 200. |
+
+The processor automatically uses BruteForce for graphs with ≤ 200 nodes
+and Barnes-Hut for larger graphs.
