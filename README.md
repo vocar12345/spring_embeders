@@ -13,12 +13,19 @@ spring_embeders/
 │   ├── layout_engine.hpp   # LayoutEngine + IRepulsiveStrategy interface
 │   ├── barnes_hut.hpp      # Barnes-Hut O(|V| log |V|) repulsion strategy
 │   ├── quadtree.hpp        # Pool-based QuadTree with bounding box export
+│   ├── parser.hpp          # Adjacency-list .txt -> Graph parser
 │   └── exporter.hpp        # CSV export: nodes, edges, metrics, animation, QuadTree
 ├── src/
-│   ├── main.cpp            # Layout simulation + animation + QuadTree export
+│   ├── main.cpp            # Single-graph simulation + animation + QuadTree export
+│   ├── batch.cpp           # Batch layout of every graph in Input/ (config-file driven)
 │   └── benchmark.cpp       # Complexity benchmark: BruteForce vs Barnes-Hut
+├── Input/                  # Drop your adjacency-list .txt files here
+├── ui.py                   # Interactive control panel (Tkinter + matplotlib)
+├── run_ui.bat              # One-click UI launcher (Windows)
+├── run_ui.sh               # One-click UI launcher (Linux / macOS)
 ├── visualise.py            # Generates thesis figures (convergence, layout, etc.)
 ├── benchmark_plot.py       # Plots complexity curves from benchmark.csv
+├── batch_visualise.py      # Renders a layout PDF for every graph in output/
 ├── animate.py              # Side-by-side animation: BruteForce vs Barnes-Hut
 ├── plot_quadtree.py        # QuadTree overlay figure
 ├── CMakeLists.txt
@@ -29,28 +36,111 @@ spring_embeders/
 
 ## Dependencies
 
-| Dependency | Version | How it is obtained |
-|---|---|---|
-| C++ compiler | C++20 | GCC via MSYS2 / MSVC |
-| CMake | >= 3.21 | [cmake.org](https://cmake.org) |
-| Ninja | any | MSYS2 / winget |
-| GLM | 1.0.1 | Auto-downloaded via `FetchContent` |
-| Python | >= 3.10 | [python.org](https://python.org) |
-| matplotlib, pandas, numpy, scipy | latest | `pip install` |
-| ffmpeg | any | `winget install ffmpeg` (for MP4 export) |
+| Dependency | Version | Linux | Windows |
+|---|---|---|---|
+| C++ compiler (C++20) | GCC 10+, Clang 12+, or MSVC 2019+ | `sudo apt install build-essential` | MSVC (Visual Studio) **or** GCC via [MSYS2](https://www.msys2.org) |
+| CMake | >= 3.21 | `sudo apt install cmake` | [cmake.org](https://cmake.org) or `winget install Kitware.CMake` |
+| Ninja *(optional generator)* | any | `sudo apt install ninja-build` | `winget install Ninja-build.Ninja` / MSYS2 |
+| GLM | 1.0.1 | Auto-downloaded via CMake `FetchContent` | same |
+| Python | >= 3.10 | `sudo apt install python3 python3-pip` | [python.org](https://python.org) |
+| Tkinter *(for the UI)* | bundled | `sudo apt install python3-tk` | bundled with the python.org installer |
+| matplotlib, pandas | latest | `pip3 install matplotlib pandas` | `pip install matplotlib pandas` |
+| numpy, scipy *(thesis figures only)* | latest | `pip3 install numpy scipy` | `pip install numpy scipy` |
+| ffmpeg *(MP4 export only)* | any | `sudo apt install ffmpeg` | `winget install ffmpeg` |
+
+> Package names above assume Debian/Ubuntu (`apt`). Use your distro's equivalent
+> on Fedora (`dnf`), Arch (`pacman`), etc. — e.g. Tkinter is `python3-tkinter`
+> on Fedora and `tk` on Arch.
 
 ---
 
 ## Build
 
+The build is identical on Linux, macOS and Windows — CMake downloads GLM
+automatically, so no manual dependency setup is required.
+
 ```bash
-cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+# 1. Configure  (omit "-G Ninja" to use your platform's default generator)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+# 2. Compile
 cmake --build build --parallel
 ```
 
-This produces two executables:
-- `build/fr_layout`     — main simulation
-- `build/fr_benchmark`  — complexity benchmark
+**Windows note:** if you use the MSYS2 / UCRT64 GCC toolchain, run the commands
+from the *MSYS2 UCRT64* shell (or make sure `C:\msys64\ucrt64\bin` is on your
+`PATH`) so the compiler can find its runtime DLLs. With Visual Studio installed,
+the default generator works from a normal *Developer PowerShell* with no extra
+setup.
+
+This produces three executables in `build/` (`.exe` suffix on Windows):
+
+| Executable | Purpose |
+|---|---|
+| `fr_layout`    | Single-graph simulation + animation + QuadTree export |
+| `fr_batch`     | Lays out **every** graph in `Input/` → `output/<name>/` |
+| `fr_benchmark` | BruteForce vs Barnes-Hut complexity sweep |
+
+---
+
+## Interactive Control Panel (UI)
+
+A cross-platform desktop UI (Python + Tkinter) for setting layout parameters,
+running the layout on every graph in `Input/`, and viewing the resulting images
+— ideal for live demos. It drives the `fr_batch` engine and renders each graph
+with matplotlib, saving a PNG to `output/<name>/layout.png`.
+
+![Example output: Petersen graph laid out by the Control Panel](docs/ui_preview.png)
+
+### Run from source (Linux, macOS, Windows)
+
+```bash
+# One-time: install the Python libraries the UI needs
+pip3 install matplotlib pandas          # use "pip" on Windows
+#   Linux also needs Tkinter:  sudo apt install python3-tk
+
+# Then, from the project root:
+python3 ui.py                            # use "python" on Windows
+```
+
+The UI builds `fr_batch` automatically on first run if it is missing.
+
+### One-click launchers
+
+| Platform | How |
+|---|---|
+| **Windows** | Double-click **`run_ui.bat`** |
+| **Linux / macOS** | `chmod +x run_ui.sh` (once), then `./run_ui.sh` |
+
+### Optional: standalone executable (no Python required)
+
+You can bundle the UI into a single self-contained executable with
+[PyInstaller](https://pyinstaller.org). The output is **OS-specific** — build it
+on the OS you intend to run it on (a Windows `.exe` will not run on Linux and
+vice-versa):
+
+```bash
+pip3 install pyinstaller
+pyinstaller --onefile --windowed --name SpringEmbedderUI ui.py
+# Result: dist/SpringEmbedderUI(.exe) — copy it into the project root,
+# next to the build/, Input/ and output/ folders, and run it there.
+```
+
+> The standalone build packages **only the Python UI**. It still calls the
+> compiled `build/fr_batch` engine, so keep the executable inside the project
+> folder alongside `build/` and `Input/`.
+
+### How to use it
+
+1. Drop your adjacency-list `.txt` files into `Input/`.
+2. Adjust any `Config` value (frame size, `C`, temperature, `theta`, iterations…).
+3. Click **▶ Run Layout**.
+4. Flip between graphs with the dropdown / Prev–Next; PNGs are written to
+   `output/<graph>/layout.png`.
+
+> `frameInterval` and `graphSeed` only affect the animation pipeline
+> (`fr_layout`); the UI shows them greyed-out because they don't change
+> input-graph layout.
 
 ---
 

@@ -46,6 +46,12 @@ dist/
 .env
 venv/
 
+# ── UI control panel (generated / packaged) ──────────────────
+ui_config.txt
+*.spec
+pyi_work/
+pyi_dist/
+
 # ── Windows ──────────────────────────────────────────────────
 Thumbs.db
 desktop.ini
