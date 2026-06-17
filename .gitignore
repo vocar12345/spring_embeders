@@ -51,6 +51,7 @@ ui_config.txt
 *.spec
 pyi_work/
 pyi_dist/
+artifact/
 
 # ── Windows ──────────────────────────────────────────────────
 Thumbs.db

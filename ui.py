@@ -109,19 +109,34 @@ class ControlPanel:
             e.grid(row=i, column=1, sticky="w", pady=3)
             self.entries[key] = e
 
+        # ── Render setting: vertex size (display only, no recompile/relayout) ──
+        vrow = len(FIELDS) + 1
+        tk.Label(left, text="Vertex size  (render)", bg=BG_COLOUR, fg="#e2e8f0",
+                 font=("Segoe UI", 9)).grid(row=vrow, column=0, sticky="w",
+                 pady=(10, 3), padx=(0, 8))
+        self.vertex_entry = tk.Entry(left, width=14, font=("Consolas", 10))
+        self.vertex_entry.insert(0, str(NODE_SIZE))
+        self.vertex_entry.grid(row=vrow, column=1, sticky="w", pady=(10, 3))
+        # Enter redraws the current graph instantly — no need to re-run layout.
+        self.vertex_entry.bind("<Return>", lambda _e: self.redraw_current())
+
+        tk.Label(left, text="Press Enter to redraw with the new size.",
+                 bg=BG_COLOUR, fg="#7d8590", font=("Segoe UI", 8)).grid(
+                 row=vrow + 1, column=0, columnspan=2, sticky="w")
+
         self.run_btn = tk.Button(left, text="▶  Run Layout",
                                  command=self.on_run,
                                  bg="#238636", fg="white",
                                  activebackground="#2ea043",
                                  font=("Segoe UI", 11, "bold"),
                                  relief="flat", padx=10, pady=6, cursor="hand2")
-        self.run_btn.grid(row=len(FIELDS) + 1, column=0, columnspan=2,
+        self.run_btn.grid(row=vrow + 2, column=0, columnspan=2,
                           sticky="we", pady=(16, 6))
 
         self.status = tk.Label(left, text="Ready.", bg=BG_COLOUR,
                                fg="#7d8590", font=("Segoe UI", 9),
                                wraplength=240, justify="left", anchor="w")
-        self.status.grid(row=len(FIELDS) + 2, column=0, columnspan=2,
+        self.status.grid(row=vrow + 3, column=0, columnspan=2,
                          sticky="we")
 
     # ── Layout: right image viewer ────────────────────────────────────────────
@@ -282,6 +297,15 @@ class ControlPanel:
         self.combo.current(i)
         self.show_selected()
 
+    def _vertex_size(self) -> float:
+        """Vertex marker area from the UI field; falls back to the default if
+        the box holds something that isn't a positive number."""
+        try:
+            v = float(self.vertex_entry.get())
+            return v if v > 0 else NODE_SIZE
+        except (ValueError, AttributeError):
+            return NODE_SIZE
+
     def show_selected(self):
         i = self.combo.current()
         if i < 0 or i >= len(self.graph_dirs):
@@ -289,6 +313,20 @@ class ControlPanel:
         self._draw(self.ax, self.graph_dirs[i])
         self.fig.tight_layout()
         self.canvas.draw()
+
+    def redraw_current(self):
+        """Re-render the currently selected graph with the current vertex size,
+        without re-running the layout, and refresh its saved PNG to match."""
+        i = self.combo.current()
+        if i < 0 or i >= len(self.graph_dirs):
+            return
+        self.show_selected()
+        try:
+            self._render_graph_to_png(self.graph_dirs[i])
+        except Exception:  # noqa: BLE001 — display already updated; PNG is a bonus
+            pass
+        self.set_status(f"Redrawn with vertex size {self._vertex_size():g}.",
+                        "#3fb950")
 
     def _render_graph_to_png(self, gdir: Path):
         fig = Figure(figsize=(10, 6), facecolor=BG_COLOUR)
@@ -322,7 +360,7 @@ class ControlPanel:
             ax.plot(xs, ys, color=EDGE_COLOUR, lw=EDGE_WIDTH,
                     alpha=EDGE_ALPHA, zorder=1, solid_capstyle="round")
 
-        ax.scatter(nodes["x"], nodes["y"], s=NODE_SIZE, c=NODE_COLOUR,
+        ax.scatter(nodes["x"], nodes["y"], s=self._vertex_size(), c=NODE_COLOUR,
                    edgecolors=NODE_EDGE_C, linewidths=0.6, zorder=2)
 
         if len(nodes) <= 50:

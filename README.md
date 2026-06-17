@@ -92,6 +92,26 @@ with matplotlib, saving a PNG to `output/<name>/layout.png`.
 
 ![Example output: Petersen graph laid out by the Control Panel](docs/ui_preview.png)
 
+### Download a ready-to-run build (no Python, no compiler)
+
+Prebuilt packages for **Windows** and **Linux** are produced by the *Build UI
+binaries* GitHub Actions workflow. A native executable can only target one OS at
+a time, so there is one package per platform:
+
+1. Grab the zip for your OS from the latest
+   [**Release**](https://github.com/vocar12345/spring_embeders/releases)
+   (or from a workflow run's *Artifacts* under the **Actions** tab):
+   - `SpringEmbedderUI-windows-x64.zip`
+   - `SpringEmbedderUI-linux-x64.zip`
+2. Unzip it. Each package already bundles the UI, the compiled `fr_batch`
+   engine, and the sample `Input/` graphs.
+3. Run `SpringEmbedderUI` (on Linux: `chmod +x SpringEmbedderUI build/fr_batch`
+   first, then `./SpringEmbedderUI`).
+
+> Maintainer note: trigger the workflow manually from the **Actions** tab, or
+> push a tag (`git tag v1.0 && git push origin v1.0`) to build both packages and
+> publish them on a Release automatically.
+
 ### Run from source (Linux, macOS, Windows)
 
 ```bash
@@ -137,6 +157,8 @@ pyinstaller --onefile --windowed --name SpringEmbedderUI ui.py
 3. Click **▶ Run Layout**.
 4. Flip between graphs with the dropdown / Prev–Next; PNGs are written to
    `output/<graph>/layout.png`.
+5. Tweak **Vertex size** and press **Enter** to redraw the current graph
+   instantly (no re-layout needed) — handy for tuning readability during a demo.
 
 > `frameInterval` and `graphSeed` only affect the animation pipeline
 > (`fr_layout`); the UI shows them greyed-out because they don't change

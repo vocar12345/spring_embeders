@@ -1,0 +1,68 @@
+name: Build UI binaries
+
+# Builds a ready-to-run package for Windows and Linux:
+#   * the standalone Control Panel UI (PyInstaller)
+#   * the compiled C++ engine (fr_batch)
+#   * the sample Input/ graphs
+# Run it manually from the Actions tab (workflow_dispatch), or push a version
+# tag (e.g. `git tag v1.0 && git push origin v1.0`) to also publish a Release
+# with both zips attached.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x64
+          - os: windows-latest
+            label: windows-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C++ build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Configure and build fr_batch
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target fr_batch --parallel
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip pyinstaller matplotlib pandas
+
+      - name: Build standalone UI (PyInstaller)
+        run: pyinstaller --onefile --windowed --name SpringEmbedderUI ui.py
+
+      - name: Assemble distribution package
+        run: python ci/package.py
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpringEmbedderUI-${{ matrix.label }}
+          path: artifact/*.zip
+          if-no-files-found: error
+
+      - name: Attach package to Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifact/*.zip
