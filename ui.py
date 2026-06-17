@@ -109,7 +109,7 @@ class ControlPanel:
             e.grid(row=i, column=1, sticky="w", pady=3)
             self.entries[key] = e
 
-        # ── Render setting: vertex size (display only, no recompile/relayout) ──
+        # ── Render settings: vertex size + spacing (display only; instant) ────
         vrow = len(FIELDS) + 1
         tk.Label(left, text="Vertex size  (render)", bg=BG_COLOUR, fg="#e2e8f0",
                  font=("Segoe UI", 9)).grid(row=vrow, column=0, sticky="w",
@@ -120,9 +120,20 @@ class ControlPanel:
         # Enter redraws the current graph instantly — no need to re-run layout.
         self.vertex_entry.bind("<Return>", lambda _e: self.redraw_current())
 
-        tk.Label(left, text="Press Enter to redraw with the new size.",
-                 bg=BG_COLOUR, fg="#7d8590", font=("Segoe UI", 8)).grid(
-                 row=vrow + 1, column=0, columnspan=2, sticky="w")
+        tk.Label(left, text="Vertex distance  (render)", bg=BG_COLOUR,
+                 fg="#e2e8f0", font=("Segoe UI", 9)).grid(row=vrow + 1, column=0,
+                 sticky="w", pady=3, padx=(0, 8))
+        self.distance_entry = tk.Entry(left, width=14, font=("Consolas", 10))
+        self.distance_entry.insert(0, "1.0")
+        self.distance_entry.grid(row=vrow + 1, column=1, sticky="w", pady=3)
+        self.distance_entry.bind("<Return>", lambda _e: self.redraw_current())
+
+        tk.Label(left,
+                 text="Press Enter in either box to redraw.\n"
+                      "Distance: >1 spreads vertices apart, <1 pulls them in.",
+                 bg=BG_COLOUR, fg="#7d8590", font=("Segoe UI", 8),
+                 justify="left").grid(row=vrow + 2, column=0, columnspan=2,
+                 sticky="w")
 
         self.run_btn = tk.Button(left, text="▶  Run Layout",
                                  command=self.on_run,
@@ -130,13 +141,13 @@ class ControlPanel:
                                  activebackground="#2ea043",
                                  font=("Segoe UI", 11, "bold"),
                                  relief="flat", padx=10, pady=6, cursor="hand2")
-        self.run_btn.grid(row=vrow + 2, column=0, columnspan=2,
+        self.run_btn.grid(row=vrow + 3, column=0, columnspan=2,
                           sticky="we", pady=(16, 6))
 
         self.status = tk.Label(left, text="Ready.", bg=BG_COLOUR,
                                fg="#7d8590", font=("Segoe UI", 9),
                                wraplength=240, justify="left", anchor="w")
-        self.status.grid(row=vrow + 3, column=0, columnspan=2,
+        self.status.grid(row=vrow + 4, column=0, columnspan=2,
                          sticky="we")
 
     # ── Layout: right image viewer ────────────────────────────────────────────
@@ -306,6 +317,15 @@ class ControlPanel:
         except (ValueError, AttributeError):
             return NODE_SIZE
 
+    def _vertex_distance(self) -> float:
+        """Spread factor from the UI field (1.0 = layout as computed, >1 spreads
+        vertices apart, <1 pulls them in). Falls back to 1.0 on bad input."""
+        try:
+            v = float(self.distance_entry.get())
+            return v if v > 0 else 1.0
+        except (ValueError, AttributeError):
+            return 1.0
+
     def show_selected(self):
         i = self.combo.current()
         if i < 0 or i >= len(self.graph_dirs):
@@ -325,8 +345,9 @@ class ControlPanel:
             self._render_graph_to_png(self.graph_dirs[i])
         except Exception:  # noqa: BLE001 — display already updated; PNG is a bonus
             pass
-        self.set_status(f"Redrawn with vertex size {self._vertex_size():g}.",
-                        "#3fb950")
+        self.set_status(
+            f"Redrawn — vertex size {self._vertex_size():g}, "
+            f"distance {self._vertex_distance():g}.", "#3fb950")
 
     def _render_graph_to_png(self, gdir: Path):
         fig = Figure(figsize=(10, 6), facecolor=BG_COLOUR)
@@ -339,6 +360,16 @@ class ControlPanel:
         nodes = pd.read_csv(gdir / "nodes.csv")
         edges = pd.read_csv(gdir / "edges.csv")
 
+        # "Vertex distance" spreads vertices apart (d>1) or pulls them together
+        # (d<1) about the layout centre. The frame stays fixed to the un-spread
+        # extent so the change in spacing is actually visible — a pure rescale
+        # with auto-fit would look identical (markers are a fixed screen size).
+        d  = self._vertex_distance()
+        cx = (nodes["x"].min() + nodes["x"].max()) / 2.0
+        cy = (nodes["y"].min() + nodes["y"].max()) / 2.0
+        nx = cx + (nodes["x"] - cx) * d
+        ny = cy + (nodes["y"] - cy) * d
+
         ax.clear()
         ax.set_facecolor(BG_COLOUR)
         margin = 60.0
@@ -349,23 +380,24 @@ class ControlPanel:
         for sp in ax.spines.values():
             sp.set_visible(False)
 
-        pos = nodes.set_index("node_id")[["x", "y"]]
+        px = {int(i): (cx + (x - cx) * d, cy + (y - cy) * d)
+              for i, x, y in zip(nodes["node_id"], nodes["x"], nodes["y"])}
         xs, ys = [], []
         for _, e in edges.iterrows():
             s, t = int(e["source"]), int(e["target"])
-            if s in pos.index and t in pos.index:
-                xs += [pos.at[s, "x"], pos.at[t, "x"], None]
-                ys += [pos.at[s, "y"], pos.at[t, "y"], None]
+            if s in px and t in px:
+                xs += [px[s][0], px[t][0], None]
+                ys += [px[s][1], px[t][1], None]
         if xs:
             ax.plot(xs, ys, color=EDGE_COLOUR, lw=EDGE_WIDTH,
                     alpha=EDGE_ALPHA, zorder=1, solid_capstyle="round")
 
-        ax.scatter(nodes["x"], nodes["y"], s=self._vertex_size(), c=NODE_COLOUR,
+        ax.scatter(nx, ny, s=self._vertex_size(), c=NODE_COLOUR,
                    edgecolors=NODE_EDGE_C, linewidths=0.6, zorder=2)
 
         if len(nodes) <= 50:
-            for _, row in nodes.iterrows():
-                ax.text(row["x"], row["y"], str(int(row["node_id"])),
+            for i, x, y in zip(nodes["node_id"], nx, ny):
+                ax.text(x, y, str(int(i)),
                         ha="center", va="center", fontsize=6,
                         color="white", fontweight="bold", zorder=3)
 
