@@ -105,8 +105,20 @@ a time, so there is one package per platform:
    - `SpringEmbedderUI-linux-x64.zip`
 2. Unzip it. Each package already bundles the UI, the compiled `fr_batch`
    engine, and the sample `Input/` graphs.
-3. Run `SpringEmbedderUI` (on Linux: `chmod +x SpringEmbedderUI build/fr_batch`
-   first, then `./SpringEmbedderUI`).
+3. Start it:
+   - **Windows:** double-click `SpringEmbedderUI.exe`.
+   - **Linux:** open a terminal **in the unzipped folder** and run:
+     ```bash
+     chmod +x SpringEmbedderUI build/fr_batch   # once
+     ./SpringEmbedderUI
+     ```
+     Linux has no reliable "double-click to run" for executables, so the app is
+     launched from a terminal.
+
+**Linux requirements:** a 64-bit Linux with **glibc 2.35 or newer**
+(Ubuntu 22.04+, Debian 12+, Fedora 36+) and a graphical desktop session. The
+binary is built on Ubuntu 22.04, so it runs on that and anything newer; on older
+distros, run [from source](#run-from-source-linux-macos-windows) instead.
 
 > Maintainer note: trigger the workflow manually from the **Actions** tab, or
 > push a tag (`git tag v1.0 && git push origin v1.0`) to build both packages and

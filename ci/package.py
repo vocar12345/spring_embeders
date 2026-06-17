@@ -79,18 +79,31 @@ def main() -> None:
     else:
         (staging / "Input").mkdir()
 
+    if is_win:
+        start_steps = (
+            "2. Start the app:\n"
+            f"   Double-click {ui_name}\n")
+        requirement = "Requires 64-bit Windows 10 or newer.\n"
+    else:
+        start_steps = (
+            "2. Start the app from a terminal opened IN THIS FOLDER:\n"
+            f"       chmod +x {ui_name} build/{batch_name}\n"
+            f"       ./{ui_name}\n"
+            "   (Linux has no reliable 'double-click to run' for executables,\n"
+            "    so the app is launched from a terminal.)\n")
+        requirement = (
+            "Requires a 64-bit Linux with glibc 2.35+ (Ubuntu 22.04+, Debian 12+,\n"
+            "Fedora 36+) and a graphical desktop session (the UI is a window).\n")
+
     (staging / "HOW_TO_RUN.txt").write_text(
         "Spring Embedder — Control Panel\n"
         "================================\n\n"
         "1. Put your adjacency-list .txt graphs in the Input/ folder.\n"
-        f"2. Run {ui_name}:\n"
-        + ("   - Windows: double-click it.\n"
-           if is_win else
-           "   - Linux/macOS: chmod +x " + ui_name + " build/" + batch_name +
-           "   then ./" + ui_name + "\n")
+        + start_steps
         + "3. Set parameters, click Run Layout, and view the graphs.\n"
           "   PNGs are written to output/<graph>/layout.png.\n\n"
-        "Keep this folder intact — the UI calls build/" + batch_name + ".\n",
+        + requirement
+        + f"Keep this folder intact — the UI calls build/{batch_name}.\n",
         encoding="utf-8")
 
     # Build the zip, marking the two binaries executable (matters on Linux/macOS).

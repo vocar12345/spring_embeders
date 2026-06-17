@@ -24,7 +24,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Build on the OLDEST supported Ubuntu so the binary's glibc
+          # requirement stays low and it runs on more distros (forward-compat).
+          # ubuntu-latest (24.04) produces binaries needing GLIBC_2.38, which
+          # fails on Ubuntu 22.04 / Debian 12 etc.
+          - os: ubuntu-22.04
             label: linux-x64
           - os: windows-latest
             label: windows-x64
