@@ -18,7 +18,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glm)
 
 # ── Shared include dir and compiler options ───────────────────────────────────
-set(FR_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/include)
+set(FR_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/Include)
 
 set(FR_COMPILE_OPTIONS
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -O2>
